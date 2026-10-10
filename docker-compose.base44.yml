@@ -296,24 +296,66 @@ services:
       start_period: 60s
     restart: on-failure
 
-  # Web entry point on port 3000, mirroring docker/nginx/conf/nginx.conf: static UI under /
-  # and /prod-api/ proxied to the gateway (single origin, so cookies/sessions just work).
-  ruoyi-web:
-    image: nginx:alpine
+  # The admin UI (RuoYi-Cloud-Vue3) lives in its own repository, so it is cloned into the
+  # (git-ignored) ./ruoyi-ui directory on startup rather than vendored into this one.
+  ruoyi-ui:
+    image: node:22
+    working_dir: /app
+    command:
+      - sh
+      - -ec
+      - |
+        if [ ! -f package.json ]; then
+          git clone --depth 1 --branch master https://github.com/yangzongzhuan/RuoYi-Cloud-Vue3.git .
+        fi
+        npm install --no-audit --no-fund
+        exec npm run dev
     volumes:
-      - ./docker/base44/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./docker/base44/html:/usr/share/nginx/html:ro
-    ports:
-      - "3000:80"
+      - ./ruoyi-ui:/app
+    environment:
+      # Every API call goes back out through the port-3000 entry point, so the UI and the
+      # API share one origin (no CORS, cookies/sessions just work).
+      VITE_APP_BASE_API: /prod-api
+      # Vite >= 6.1 appends this to server.allowedHosts; the platform supplies the value.
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:
+      # vite.config.js sets server.open; there is no browser in the container.
+      BROWSER: none
     depends_on:
       ruoyi-gateway:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 10s
+      retries: 30
+      start_period: 60s
+    restart: on-failure
+
+  # Web entry point on port 3000: the admin UI at / and the gateway API under /prod-api/.
+  ruoyi-web:
+    image: nginx:alpine
+    volumes:
+      - ./docker/base44/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "3000:80"
+    depends_on:
+      ruoyi-ui:
+        condition: service_healthy
+      ruoyi-gateway:
+        condition: service_healthy
+    healthcheck:
+      # Proxies two backends, so check both and say which one failed.
+      test:
+        - CMD-SHELL
+        - >-
+          wget -q -O /dev/null http://127.0.0.1/ ||
+          { echo "UI (ruoyi-ui) unreachable"; exit 1; };
+          wget -q -O /dev/null --header='Accept: text/plain' http://127.0.0.1/prod-api/code ||
+          { echo "API (ruoyi-gateway) unreachable"; exit 1; }
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
     restart: on-failure
 
 volumes:

@@ -5,34 +5,36 @@ finding you would not get from the manifests alone.
 
 ## What this repository is
 
-`RuoYi-Cloud` **backend only** (Spring Cloud microservices, Java 17, Spring Boot
-4.1.0 / Spring Cloud 2025.1.2). The admin UI (`ruoyi-ui`) is a **separate repository**
-(Vue 2/3); it is not part of this checkout and `docker/nginx/html/dist/` only contains a
-placeholder. `docker/docker-compose.yml` expects prebuilt jars dropped into
-`docker/ruoyi/*/jar/`, so it cannot run the current source — use
-`docker-compose.base44.yml` instead.
+`RuoYi-Cloud` — Spring Cloud microservices, Java 17, Spring Boot 4.1.0 / Spring Cloud
+2025.1.2 (version 3.6.8). The admin UI is **not checked in here**: it is a separate
+project, `RuoYi-Cloud-Vue3` (v3.6.8, Vue 3 + Vite + Element Plus). `docker-compose.base44.yml`
+clones it into the git-ignored `./ruoyi-ui` directory on first start, so the stack comes up
+complete.
 
-Modules: `ruoyi-gateway` (8080), `ruoyi-auth` (9200), `ruoyi-modules/ruoyi-system`
+The repo's own `docker/docker-compose.yml` expects prebuilt jars dropped into
+`docker/ruoyi/*/jar/`, so it cannot run the current source — use `docker-compose.base44.yml`.
+
+Backend modules: `ruoyi-gateway` (8080), `ruoyi-auth` (9200), `ruoyi-modules/ruoyi-system`
 (9201), `ruoyi-gen` (9202), `ruoyi-job` (9203), `ruoyi-file` (9300),
-`ruoyi-visual/ruoyi-monitor` (9100).
+`ruoyi-visual/ruoyi-monitor` (9100). Frontend: `ruoyi-ui` (Vite dev server, internal :80).
 
 ## Running it
 
 ```bash
-docker compose -f docker-compose.base44.yml up -d      # first run: ~6 min Maven build
+docker compose -f docker-compose.base44.yml up -d      # cold start: ~6 min Maven build + UI npm install
 docker compose -f docker-compose.base44.yml ps         # every service should be (healthy)
 ```
 
 * The one-shot `build` service runs `mvn -DskipTests package` against the bind-mounted
   repo and writes the jars into `./<module>/target/`. Compose waits for it before starting
   the application services, so `up -d` blocks until the build finishes.
-* **There is no hot reload for Java.** After editing Java source, rebuild and restart the
-  affected service:
-  `docker compose -f docker-compose.base44.yml run --rm build`
-  then `docker compose -f docker-compose.base44.yml up -d <service>`.
-  `reload_preview` afterwards.
-* Runtime images are `maven:3.9-eclipse-temurin-17` (same base as the build, so the JDK and
-  `curl` for healthchecks are guaranteed to be present).
+* **Java has no hot reload.** After editing Java source, rebuild and restart the affected
+  service: `docker compose -f docker-compose.base44.yml run --rm build` then
+  `docker compose -f docker-compose.base44.yml up -d <service>`, then `reload_preview`.
+* **The UI does hot-reload** (Vite dev server, `npm run dev`). Frontend edits under
+  `ruoyi-ui/` — which is a clone, so they are local only and lost on a fresh checkout.
+* Backend runtime images are `maven:3.9-eclipse-temurin-17` (same base as the build, so the
+  JDK and `curl` for healthchecks are present). The UI runs on `node:22`.
 
 ## Configuration lives in Nacos, not in the repo
 
@@ -62,25 +64,24 @@ Consequences:
 docker exec ruoyi-cloud-base44-nacos-1 \
   curl -s "http://127.0.0.1:8848/nacos/v1/ns/service/list?pageNo=1&pageSize=30"
 
-# web entry point (placeholder page, /prod-api/ proxied to the gateway)
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/
-curl -s -H 'Accept: text/plain' http://localhost:3000/prod-api/code   # captcha
+# web entry point: the admin UI, and the API behind the same origin
+curl -s http://localhost:3000/ | grep -o "<title>.*</title>"          # 若依管理系统
+curl -s -H 'Accept: text/plain' http://localhost:3000/prod-api/code    # captcha JSON
 ```
 
-### The captcha is served by the gateway, not by ruoyi-auth
+### The captcha blocks scripted UI login
 
-`RouterFunctionConfiguration` maps `GET /code` to `ValidateCodeHandler` in **ruoyi-gateway**.
-Because it is a WebFlux `RouterFunction` it is handled before the gateway's `AuthFilter`, so
-it needs no token — that is why `/code` is absent from `security.ignore.whites`. Through the
-web entry point the URL is `/prod-api/code`. There is no `/auth/code` endpoint.
+`RouterFunctionConfiguration` maps `GET /code` to `ValidateCodeHandler` in **ruoyi-gateway**
+(a WebFlux `RouterFunction`, so it runs before the gateway's `AuthFilter` and needs no token —
+that is why `/code` is absent from `security.ignore.whites`). Through the entry point it is
+`/prod-api/code`. There is no `/auth/code`.
 
-Login is captcha-protected (`security.captcha.enabled: true` in `ruoyi-gateway-dev.yml`), so
-a scripted login must fetch `/prod-api/code` first and read the issued answer from Redis
-(`captcha_codes:<uuid>`) before POSTing `/prod-api/auth/login`. Documented default account:
-`admin` / `admin123` (see README).
+Login is captcha-protected (`security.captcha.enabled: true` in `ruoyi-gateway-dev.yml`) and
+the answer only ever lives in Redis (`captcha_codes:<uuid>`), never in the image, so
+**a browser-only script cannot complete the login form**. The login page does prefill
+`admin` / `admin123` (see `src/views/login.vue`), so a person only types the captcha.
 
-End-to-end check that exercises the whole chain (nginx → gateway → auth → redis → Feign →
-ruoyi-system → MySQL):
+API-level end-to-end check (nginx → gateway → auth → redis → Feign → ruoyi-system → MySQL):
 
 ```bash
 BASE=http://localhost:3000/prod-api
@@ -94,20 +95,31 @@ curl -s "$BASE/system/user/list" -H "Authorization: Bearer $TOKEN"
 curl -s -X DELETE "$BASE/auth/logout" -H "Authorization: Bearer $TOKEN"
 ```
 
+To verify the *signed-in* UI without the form, take a token from the block above and set the
+UI's cookie (`Admin-Token`, see `ruoyi-ui/src/utils/auth.js`) in the browser — that is a real
+session created by the app's own login API.
+
 ## Sandbox-specific notes
 
-* Host port **3000** is the web entry point: a small nginx (`docker/base44/nginx.conf`,
-  modelled on `docker/nginx/conf/nginx.conf`) that serves `docker/base44/html/index.html` at
-  `/` and proxies `/prod-api/` to the gateway. Single origin, so cookies/sessions are not
-  affected by CORS. Drop the real `ruoyi-ui` build into `docker/base44/html/` to see the
-  admin UI at the same address.
-  (`docker/nginx/html/dist/` is git-ignored by the repo's `.gitignore` (`dist/`), which is why
-  the placeholder lives under `docker/base44/`.)
+* Host port **3000** is the web entry point (`docker/base44/nginx.conf`, modelled on
+  `docker/nginx/conf/nginx.conf`):
+  `/` → `ruoyi-ui` (Vite), `/prod-api/` and `/dev-api/` → `ruoyi-gateway`. One origin, so no
+  CORS and cookies just work.
+  * The UI is pointed at `/prod-api` with `VITE_APP_BASE_API` (an existing env hook in the
+    frontend — no source edit). `/dev-api/`, the value in the frontend's own
+    `.env.development`, is proxied as well so either value works.
+  * `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` is passed through bare (Vite >= 6.1 appends it to
+    `server.allowedHosts`, letting the preview host reach the dev server), and `BROWSER=none`
+    stops `server.open` from spawning `xdg-open` in the container.
+  * `ruoyi-ui/` is git-ignored: it is an external repo, cloned at startup when absent.
 * Nacos 3 moved the health endpoints to the console port and `410`s them on 8848, so the
   Nacos healthcheck probes the config API it actually serves
   (`/nacos/v1/cs/configs?...`), which also proves the MySQL config store is reachable.
-* Dashboard ports: Nacos console `8088` (nacos / nacos), Spring Boot Admin monitor `9100`
-  (ruoyi / 123456), gateway API `8080`.
+* Dashboard ports (each also publicly reachable on its own host port):
+  Nacos console `8088` (nacos / nacos), Spring Boot Admin monitor `9100` — use
+  `9100/login` (ruoyi / 123456), the root answers `401` — and gateway API `8080`.
+  The seeded menu 113 ("Admin控制台") points at `http://localhost:9100/login`, which resolves
+  to the viewer's own machine, so that one menu entry will not open the monitor in the sandbox.
 * **Sentinel in the gateway — must not point at `127.0.0.1`:** `ruoyi-gateway`'s
   `bootstrap.yml` hardcodes `spring.cloud.sentinel.datasource.ds1.nacos.server-addr:
   127.0.0.1:8848` (and `sentinel.transport.dashboard: 127.0.0.1:8718`). Inside a container
@@ -122,6 +134,9 @@ curl -s -X DELETE "$BASE/auth/logout" -H "Authorization: Bearer $TOKEN"
   so `SPRING_CLOUD_SENTINEL_TRANSPORT_DASHBOARD` is set empty rather than heartbeating a dead
   `127.0.0.1:8718`. Seata is genuinely unused: `ruoyi-common-seata` appears only in the root
   `dependencyManagement`, no module depends on it.
-* No host- or origin-allowlist changes were needed (nothing in this stack checks `Host` or
-  `Origin`), and no third-party credentials are required: file storage is local (`file.path`).
-  Because no code or shared config is gated, `BASE44_PREVIEW_MODE` is not used here.
+* No host- or origin-allowlist changes were needed beyond Vite's, and no third-party
+  credentials are required: file storage is local (`file.path`). Because no code or shared
+  config is gated, `BASE44_PREVIEW_MODE` is not used here.
+* Known cosmetic console noise: the navbar avatar is rendered as `<img :src="avatar">` and the
+  seeded `admin` user has no avatar, so the browser requests the page URL as an image once and
+  logs `Failed to load img ...`. Harmless; the navbar falls back to the user name.

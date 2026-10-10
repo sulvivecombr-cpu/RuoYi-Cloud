@@ -44,3 +44,9 @@ nbdist/
 !*/build/*.java
 !*/build/*.html
 !*/build/*.xml
+
+######################################################################
+# Base44 sandbox: the admin UI (ruoyi-ui) lives in its own repository and
+# is cloned here at compose startup, so it is not vendored into this repo.
+
+ruoyi-ui/
