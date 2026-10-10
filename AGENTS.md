@@ -118,18 +118,37 @@ session created by the app's own login API.
 * Dashboard ports (each also publicly reachable on its own host port):
   Nacos console `8088` (nacos / nacos), Spring Boot Admin monitor `9100` — use
   `9100/login` (ruoyi / 123456), the root answers `401` — and gateway API `8080`.
-* **Console dashboard menu links — rewritten at startup.** The seeded menus point at
-  `http://localhost:<port>` (112 Nacos控制台 `:8848/nacos`, 113 Admin控制台 `:9100/login`,
-  116 系统接口 `:8080/swagger-ui/index.html`), and localhost in a browser is the *viewer's*
-  own machine, so none of them opened. The one-shot `menu-urls` service (plain `mysql:8.0`,
-  `depends_on: mysql healthy`, no `restart`) rewrites those three rows onto
-  `https://<port>-${BASE44_PUBLIC_HOST_SUFFIX}` on every `up -d`, and hides menu 111
-  (Sentinel控制台 `:8718`) because no Sentinel dashboard runs here. It is idempotent, and
-  skips the rewrite when `BASE44_PUBLIC_HOST_SUFFIX` is unset. Check it with
-  `docker compose -f docker-compose.base44.yml ps menu-urls` (exited 0) or
-  `select menu_id, path, visible from sys_menu where path like 'http%'`. The menu tree the
-  UI shows comes from `GET /system/menu/getRouters`, so the new URLs appear after a page
-  reload (routes are fetched on load).
+* **Console dashboard menu links — rewritten during the MySQL first boot.** The seeded menus
+  point at `http://localhost:<port>` (112 Nacos控制台 `:8848/nacos`, 113 Admin控制台
+  `:9100/login`, 116 系统接口 `:8080/swagger-ui/index.html`), and localhost in a browser is
+  the *viewer's* own machine, so none of them opened. `sql/zz_base44_menu_urls_init.sh` rides
+  the `sql/` mount the mysql service already gets (a second mount inside that read-only
+  directory cannot be created) and its name sorts after the seeds, so the entrypoint sources
+  it once with `sys_menu` already populated: it points those three rows at
+  `https://<port>-${BASE44_PUBLIC_HOST_SUFFIX}` and hides menu 111 (Sentinel控制台 `:8718` —
+  no Sentinel dashboard runs here). It logs what it did, and does nothing when the variable is
+  unset (outside the sandbox).
+  * Init scripts run **only while `mysql-data` is empty**, so this is not re-applied when the
+    volume already exists. After a sandbox host change, re-run the same statements by hand —
+    they are the `UPDATE`s in that file, with `$BASE44_PUBLIC_HOST_SUFFIX` expanded:
+    `docker compose -f docker-compose.base44.yml exec -T mysql mysql -uroot -ppassword ry-cloud -e "UPDATE sys_menu SET path='https://9100-${BASE44_PUBLIC_HOST_SUFFIX}/login' WHERE menu_id=113; ..."`
+  * Verify with
+    `docker compose -f docker-compose.base44.yml exec -T mysql mysql -uroot -ppassword -N -e "select menu_id, path, visible from sys_menu where menu_id in (111,112,113,116)"`:
+    the three URLs must carry the current `BASE44_PUBLIC_HOST_SUFFIX`. The UI shows them after
+    a page reload — the tree comes from `GET /system/menu/getRouters`.
+* **Language: Brazilian Portuguese.** Two halves, and only one of them lives in this repository.
+  * *Menu names and permission names* are data (`sys_menu`): all 84 rows — navigation plus the
+    permission tree — were translated to pt-BR in `sql/ry_20260417.sql` and in the running
+    database. Changing one later is a plain `UPDATE sys_menu SET menu_name=...`.
+  * *Widget copy* (date pickers, month/week names, pagination, tables, dialogs, uploads) comes
+    from Element Plus, whose locale the UI hardcodes to `zh-cn` in `src/main.js`.
+    `docker/base44/ui-ptbr.sh` rewrites that one line to `element-plus/es/locale/lang/pt-br`;
+    `ruoyi-ui` mounts it and runs it after the clone, so it survives a fresh checkout. Re-run it
+    by hand with
+    `docker compose -f docker-compose.base44.yml exec -T ruoyi-ui sh /usr/local/bin/ui-ptbr.sh`.
+  * *Page copy* — table headers, form labels, buttons, the home page — is hardcoded Chinese inside
+    the separate UI project. Nothing in this repository can translate it, and `ruoyi-ui/` is
+    git-ignored, so edits there are local only. **Not translated yet.**
 * **Sentinel in the gateway — must not point at `127.0.0.1`:** `ruoyi-gateway`'s
   `bootstrap.yml` hardcodes `spring.cloud.sentinel.datasource.ds1.nacos.server-addr:
   127.0.0.1:8848` (and `sentinel.transport.dashboard: 127.0.0.1:8718`). Inside a container

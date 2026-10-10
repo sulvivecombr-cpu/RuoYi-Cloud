@@ -38,9 +38,17 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: password
       MYSQL_DATABASE: ry-cloud
+      # Read by sql/zz_base44_menu_urls_init.sh. Bare on purpose: passed through
+      # untouched from the platform, and simply absent outside the sandbox.
+      BASE44_PUBLIC_HOST_SUFFIX:
     volumes:
       # sql/ry_config_20260918.sql seeds the Nacos config store, ry_20260417.sql + quartz.sql
-      # seed the business schema in ry-cloud. Scripts run in filename order on first boot only.
+      # seed the business schema in ry-cloud, and sql/zz_base44_menu_urls_init.sh runs last of
+      # all: it points the console's dashboard menu rows at this sandbox's public host ports.
+      # They all ride this ONE mount on purpose — a second mount inside this read-only directory
+      # cannot be created (Docker fails the container with "read-only file system"), which is
+      # why the sandbox script lives in sql/ rather than in docker/base44/.
+      # Scripts run in filename order, on first boot (empty data directory) only.
       - ./sql:/docker-entrypoint-initdb.d:ro
       - mysql-data:/var/lib/mysql
     healthcheck:
@@ -107,36 +115,6 @@ services:
     volumes:
       - ./:/workspace
       - maven-repo:/root/.m2
-    restart: "no"
-
-  # One-shot: the seeded console menus "Nacos控制台" (112), "Admin控制台" (113) and
-  # "系统接口" (116) link to http://localhost:<port>, which in a browser resolves to the
-  # *viewer's* own machine, so those pages never open. Rewrite them onto this sandbox's
-  # public host ports — derived at startup from the platform variable, never hardcoded, so
-  # they stay correct when the sandbox host changes. Runs on every `up -d` and is idempotent.
-  # Menu 111 ("Sentinel控制台") is hidden: no Sentinel dashboard runs in this stack.
-  menu-urls:
-    image: mysql:8.0
-    depends_on:
-      mysql:
-        condition: service_healthy
-    environment:
-      # The platform supplies this; unset outside the sandbox, which skips the rewrite.
-      BASE44_PUBLIC_HOST_SUFFIX: ${BASE44_PUBLIC_HOST_SUFFIX:-}
-    entrypoint: ["sh", "-ec"]
-    command:
-      - |
-        if [ -z "$BASE44_PUBLIC_HOST_SUFFIX" ]; then
-          echo "BASE44_PUBLIC_HOST_SUFFIX unset - leaving the seeded dashboard menu URLs alone"
-          exit 0
-        fi
-        mysql -h mysql -uroot -ppassword ry-cloud <<SQL
-        UPDATE sys_menu SET path = 'https://8088-$BASE44_PUBLIC_HOST_SUFFIX/'                        WHERE menu_id = 112;
-        UPDATE sys_menu SET path = 'https://9100-$BASE44_PUBLIC_HOST_SUFFIX/login'                   WHERE menu_id = 113;
-        UPDATE sys_menu SET path = 'https://8080-$BASE44_PUBLIC_HOST_SUFFIX/swagger-ui/index.html'   WHERE menu_id = 116;
-        UPDATE sys_menu SET visible = '1'                                                            WHERE menu_id = 111;
-        SQL
-        echo "dashboard menus now point at the public host ports of this sandbox"
     restart: "no"
 
   ruoyi-gateway:
@@ -339,9 +317,13 @@ services:
           git clone --depth 1 --branch master https://github.com/yangzongzhuan/RuoYi-Cloud-Vue3.git .
         fi
         npm install --no-audit --no-fund
+        # Brazilian Portuguese widgets: point the UI's Element Plus locale at pt-br before the
+        # dev server starts (upstream hardcodes zh-cn). See docker/base44/ui-ptbr.sh.
+        sh /usr/local/bin/ui-ptbr.sh
         exec npm run dev
     volumes:
       - ./ruoyi-ui:/app
+      - ./docker/base44/ui-ptbr.sh:/usr/local/bin/ui-ptbr.sh:ro
     environment:
       # Every API call goes back out through the port-3000 entry point, so the UI and the
       # API share one origin (no CORS, cookies/sessions just work).
