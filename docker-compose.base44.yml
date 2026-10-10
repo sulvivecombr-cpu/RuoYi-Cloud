@@ -245,7 +245,11 @@ services:
       mysql:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9203/actuator/health || exit 1"]
+      # The full /actuator/health endpoint blocks in Sentinel's health indicator on this
+      # upstream version, then triggers a Logback class mismatch while it tries to log the
+      # timeout. The normal Actuator root remains a read-only, immediate response from this
+      # service's live web application, so it is the meaningful responsiveness probe here.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9203/actuator >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20

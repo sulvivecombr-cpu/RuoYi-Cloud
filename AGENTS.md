@@ -112,9 +112,21 @@ session created by the app's own login API.
     `server.allowedHosts`, letting the preview host reach the dev server), and `BROWSER=none`
     stops `server.open` from spawning `xdg-open` in the container.
   * `ruoyi-ui/` is git-ignored: it is an external repo, cloned at startup when absent.
+  * nginx resolves its upstreams **per request** (Docker's embedded DNS via
+    `resolver 127.0.0.11 valid=10s` plus variables in `proxy_pass`). Without that, recreating
+    only `ruoyi-ui` gives it a new address while nginx keeps the one it resolved at startup and
+    the entry point answers 502 until nginx itself is restarted — which is exactly what
+    `docker compose -f docker-compose.base44.yml up -d ruoyi-ui` used to trigger.
 * Nacos 3 moved the health endpoints to the console port and `410`s them on 8848, so the
   Nacos healthcheck probes the config API it actually serves
   (`/nacos/v1/cs/configs?...`), which also proves the MySQL config store is reachable.
+* **Job service healthcheck:** `ruoyi-modules-job` responds immediately to `/actuator`,
+  `/actuator/info`, and `/actuator/metrics`, but its upstream `/actuator/health` blocks in
+  Sentinel's health indicator and then raises `NoClassDefFoundError:
+  ch.qos.logback.classic.spi.ThrowableProxy` while logging the timeout. Compose therefore
+  probes the read-only `/actuator` root: it confirms the live job application's web endpoint
+  responds without triggering that upstream failure. Do not switch it back to
+  `/actuator/health` unless the Sentinel / Logback incompatibility is resolved.
 * Dashboard ports (each also publicly reachable on its own host port):
   Nacos console `8088` (nacos / nacos), Spring Boot Admin monitor `9100` — use
   `9100/login` (ruoyi / 123456), the root answers `401` — and gateway API `8080`.
