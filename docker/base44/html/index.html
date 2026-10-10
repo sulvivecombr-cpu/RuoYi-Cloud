@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RuoYi-Cloud</title>
+<style>
+  body { margin: 0; padding: 48px 24px; background: #f5f7fa; color: #303133;
+         font: 15px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; background: #fff; border-radius: 8px;
+         padding: 32px 36px; box-shadow: 0 2px 12px rgba(0,0,0,.06); }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 24px; color: #909399; }
+  ul { margin: 8px 0 0; padding-left: 20px; }
+  li { margin: 4px 0; }
+  code { background: #f0f2f5; border-radius: 4px; padding: 1px 6px; }
+  .note { margin-top: 24px; padding: 12px 16px; background: #fdf6ec; border-radius: 6px;
+          color: #b88230; }
+</style>
+</head>
+<body>
+<main>
+  <h1>RuoYi-Cloud</h1>
+  <p class="sub">微服务后端已启动 / backend is running</p>
+
+  <p>网关、认证中心与各业务模块已在 Nacos 注册，接口通过下方前缀访问：</p>
+  <ul>
+    <li>API 前缀：<code>/prod-api/</code>（转发到网关 <code>ruoyi-gateway:8080</code>）</li>
+    <li>登录接口：<code>/prod-api/auth/login</code></li>
+    <li>验证码：<code>/prod-api/code</code>（由网关提供）</li>
+  </ul>
+
+  <div class="note">
+    本仓库只包含后端（RuoYi-Cloud）。前端 ruoyi-ui 是独立仓库，构建产物放到
+    <code>docker/base44/html/</code> 后刷新本页即可看到管理后台。
+  </div>
+</main>
+</body>
+</html>

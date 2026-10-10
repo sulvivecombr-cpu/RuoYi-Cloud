@@ -1,0 +1,314 @@
+# Base44 sandbox development environment for RuoYi-Cloud.
+#
+# Everything runs FROM THE CLONED SOURCE: the one-shot `build` service compiles the
+# repo with Maven (into ./target, bind-mounted), and each application service runs the
+# freshly built jar with the repo bind-mounted at /workspace. No prebuilt application
+# image is involved, so a source edit is picked up by re-running the build service.
+#
+# Infrastructure (MySQL / Redis / Nacos) are plain upstream images.
+# Host port 3000 serves the web entry point (nginx: placeholder page + /prod-api proxy
+# to the gateway) exactly like docker/docker-compose.yml does in production.
+#
+# Usage: docker compose -f docker-compose.base44.yml up -d --build
+# Rebuild Java after an edit: docker compose -f docker-compose.base44.yml run --rm build
+name: ruoyi-cloud-base44
+
+x-app-image: &app-image maven:3.9-eclipse-temurin-17
+x-jvm-opts: &jvm-opts ["-Xms64m", "-Xmx512m", "-XX:MaxMetaspaceSize=256m"]
+x-nacos-registry: &nacos-registry
+  SPRING_CLOUD_NACOS_DISCOVERY_SERVER_ADDR: nacos:8848
+  SPRING_CLOUD_NACOS_CONFIG_SERVER_ADDR: nacos:8848
+x-redis-host: &redis-host
+  SPRING_DATA_REDIS_HOST: redis
+  SPRING_DATA_REDIS_PORT: "6379"
+x-db-credentials: &db-credentials
+  SPRING_DATASOURCE_USERNAME: root
+  SPRING_DATASOURCE_PASSWORD: password
+
+services:
+  mysql:
+    image: mysql:8.0
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --lower-case-table-names=1
+      - --default-time-zone=+8:00
+      - --innodb-buffer-pool-size=256M
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: ry-cloud
+    volumes:
+      # sql/ry_config_20260918.sql seeds the Nacos config store, ry_20260417.sql + quartz.sql
+      # seed the business schema in ry-cloud. Scripts run in filename order on first boot only.
+      - ./sql:/docker-entrypoint-initdb.d:ro
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -ppassword --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 40s
+    restart: on-failure
+
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: on-failure
+
+  nacos:
+    image: nacos/nacos-server:v3.0.2
+    environment:
+      MODE: standalone
+      # Config store is MySQL (db ry-config, seeded from sql/). Nacos 3 reads these via
+      # the env names baked into its own conf/application.properties template.
+      SPRING_DATASOURCE_PLATFORM: mysql
+      MYSQL_SERVICE_HOST: mysql
+      MYSQL_SERVICE_PORT: "3306"
+      MYSQL_SERVICE_DB_NAME: ry-config
+      MYSQL_SERVICE_USER: root
+      MYSQL_SERVICE_PASSWORD: password
+      MYSQL_SERVICE_DB_PARAM: characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useUnicode=true&useSSL=false&serverTimezone=UTC
+      # Local dev infrastructure values (generated here, not user secrets).
+      NACOS_AUTH_TOKEN: V2hhdEV2ZXJZb3VTYXlJc0p1c3RBbm90aGVyRGV2VG9rZW5Gb3JOYWNvczEyMzQ1Njc4OTA=
+      NACOS_AUTH_IDENTITY_KEY: serverIdentity
+      NACOS_AUTH_IDENTITY_VALUE: security
+      NACOS_CONSOLE_PORT: "8080"
+      JVM_XMS: 256m
+      JVM_XMX: 512m
+    ports:
+      - "8848:8848" # server / open API
+      - "9848:9848" # gRPC client
+      - "9849:9849" # gRPC server
+      - "8088:8080" # console UI (default login nacos / nacos)
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      # Nacos 3 moved the health endpoints to the console port; probe the config API the
+      # clients actually use, which also proves the MySQL config store is reachable.
+      test: ["CMD-SHELL", "curl -fsS 'http://127.0.0.1:8848/nacos/v1/cs/configs?dataId=ruoyi-gateway-dev.yml&group=DEFAULT_GROUP' >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: on-failure
+
+  # One-shot: compiles the whole reactor from the bind-mounted source into ./<module>/target.
+  build:
+    image: *app-image
+    working_dir: /workspace
+    command: ["mvn", "-B", "-ntp", "-DskipTests", "package"]
+    volumes:
+      - ./:/workspace
+      - maven-repo:/root/.m2
+    restart: "no"
+
+  ruoyi-gateway:
+    image: *app-image
+    working_dir: /workspace
+    command: ["java", "-Xms64m", "-Xmx512m", "-XX:MaxMetaspaceSize=256m", "-jar", "ruoyi-gateway/target/ruoyi-gateway.jar"]
+    volumes:
+      - ./:/workspace
+    environment:
+      <<: [*nacos-registry, *redis-host]
+    ports:
+      - "8080:8080"
+    depends_on:
+      build:
+        condition: service_completed_successfully
+      nacos:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: on-failure
+
+  ruoyi-auth:
+    image: *app-image
+    working_dir: /workspace
+    command: ["java", "-Xms64m", "-Xmx384m", "-XX:MaxMetaspaceSize=256m", "-jar", "ruoyi-auth/target/ruoyi-auth.jar"]
+    volumes:
+      - ./:/workspace
+    environment:
+      <<: [*nacos-registry, *redis-host]
+    depends_on:
+      build:
+        condition: service_completed_successfully
+      nacos:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: on-failure
+
+  ruoyi-modules-system:
+    image: *app-image
+    working_dir: /workspace
+    command: ["java", "-Xms64m", "-Xmx384m", "-XX:MaxMetaspaceSize=256m", "-jar", "ruoyi-modules/ruoyi-system/target/ruoyi-modules-system.jar"]
+    volumes:
+      - ./:/workspace
+    environment:
+      <<: [*nacos-registry, *redis-host, *db-credentials]
+      # Nacos-shipped config points at localhost; the sandbox talks to the compose service.
+      SPRING_DATASOURCE_DYNAMIC_DATASOURCE_MASTER_URL: jdbc:mysql://mysql:3306/ry-cloud?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=GMT%2B8
+    depends_on:
+      build:
+        condition: service_completed_successfully
+      nacos:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9201/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    restart: on-failure
+
+  ruoyi-modules-gen:
+    image: *app-image
+    working_dir: /workspace
+    command: ["java", "-Xms64m", "-Xmx384m", "-XX:MaxMetaspaceSize=256m", "-jar", "ruoyi-modules/ruoyi-gen/target/ruoyi-modules-gen.jar"]
+    volumes:
+      - ./:/workspace
+    environment:
+      <<: [*nacos-registry, *redis-host, *db-credentials]
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ry-cloud?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=GMT%2B8
+    depends_on:
+      build:
+        condition: service_completed_successfully
+      nacos:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9202/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    restart: on-failure
+
+  ruoyi-modules-job:
+    image: *app-image
+    working_dir: /workspace
+    command: ["java", "-Xms64m", "-Xmx384m", "-XX:MaxMetaspaceSize=256m", "-jar", "ruoyi-modules/ruoyi-job/target/ruoyi-modules-job.jar"]
+    volumes:
+      - ./:/workspace
+    environment:
+      <<: [*nacos-registry, *redis-host, *db-credentials]
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ry-cloud?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=GMT%2B8
+    depends_on:
+      build:
+        condition: service_completed_successfully
+      nacos:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9203/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    restart: on-failure
+
+  ruoyi-modules-file:
+    image: *app-image
+    working_dir: /workspace
+    command: ["java", "-Xms64m", "-Xmx384m", "-XX:MaxMetaspaceSize=256m", "-jar", "ruoyi-modules/ruoyi-file/target/ruoyi-modules-file.jar"]
+    volumes:
+      - ./:/workspace
+      - upload-path:/home/ruoyi/uploadPath
+    environment:
+      <<: [*nacos-registry, *redis-host]
+      # Nacos-shipped config is Windows-oriented (D:/ruoyi/uploadPath); keep uploads local.
+      FILE_PATH: /home/ruoyi/uploadPath
+      FILE_DOMAIN: /prod-api/file
+    depends_on:
+      build:
+        condition: service_completed_successfully
+      nacos:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9300/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: on-failure
+
+  ruoyi-monitor:
+    image: *app-image
+    working_dir: /workspace
+    command: ["java", "-Xms64m", "-Xmx384m", "-XX:MaxMetaspaceSize=256m", "-jar", "ruoyi-visual/ruoyi-monitor/target/ruoyi-visual-monitor.jar"]
+    volumes:
+      - ./:/workspace
+    environment:
+      <<: [*nacos-registry, *redis-host]
+    ports:
+      - "9100:9100" # Spring Boot Admin dashboard (login ruoyi / 123456)
+    depends_on:
+      build:
+        condition: service_completed_successfully
+      nacos:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9100/login || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: on-failure
+
+  # Web entry point on port 3000, mirroring docker/nginx/conf/nginx.conf: static UI under /
+  # and /prod-api/ proxied to the gateway (single origin, so cookies/sessions just work).
+  ruoyi-web:
+    image: nginx:alpine
+    volumes:
+      - ./docker/base44/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/base44/html:/usr/share/nginx/html:ro
+    ports:
+      - "3000:80"
+    depends_on:
+      ruoyi-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: on-failure
+
+volumes:
+  mysql-data:
+  maven-repo:
+  upload-path:
