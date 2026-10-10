@@ -321,17 +321,25 @@ services:
           git clone --depth 1 --branch master https://github.com/yangzongzhuan/RuoYi-Cloud-Vue3.git .
         fi
         npm install --no-audit --no-fund
-        # Brazilian Portuguese widgets: point the UI's Element Plus locale at pt-br before the
-        # dev server starts (upstream hardcodes zh-cn). See docker/base44/ui-ptbr.sh.
-        sh /usr/local/bin/ui-ptbr.sh
+        # White-label the console: Brazilian Portuguese copy, pt-BR Element Plus widgets and no
+        # upstream credits. Idempotent, so it survives this fresh clone of the UI project.
+        # See docker/base44/ui-ptbr.mjs.
+        node /usr/local/bin/ui-ptbr.mjs /app
         exec npm run dev
     volumes:
       - ./ruoyi-ui:/app
-      - ./docker/base44/ui-ptbr.sh:/usr/local/bin/ui-ptbr.sh:ro
+      - ./docker/base44/ui-ptbr.mjs:/usr/local/bin/ui-ptbr.mjs:ro
+      - ./docker/base44/ui-ptbr.copy.mjs:/usr/local/bin/ui-ptbr.copy.mjs:ro
+      - ./docker/base44/dashboard.vue:/usr/local/bin/dashboard.vue:ro
     environment:
       # Every API call goes back out through the port-3000 entry point, so the UI and the
       # API share one origin (no CORS, cookies/sessions just work).
       VITE_APP_BASE_API: /prod-api
+      # Console wordmark + browser tab (upstream hardcodes 若依管理系统 in the UI's .env files;
+      # Vite gives a real environment variable precedence over those files). Neutral on purpose:
+      # it is the product name at the top of every screen, so it must not carry a vendor credit.
+      # Kept short because the sidebar clips a longer title.
+      VITE_APP_TITLE: Painel Administrativo
       # Vite >= 6.1 appends this to server.allowedHosts; the platform supplies the value.
       __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:
       # vite.config.js sets server.open; there is no browser in the container.

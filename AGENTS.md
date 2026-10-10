@@ -65,7 +65,7 @@ docker exec ruoyi-cloud-base44-nacos-1 \
   curl -s "http://127.0.0.1:8848/nacos/v1/ns/service/list?pageNo=1&pageSize=30"
 
 # web entry point: the admin UI, and the API behind the same origin
-curl -s http://localhost:3000/ | grep -o "<title>.*</title>"          # 若依管理系统
+curl -s http://localhost:3000/ | grep -o "<title>.*</title>"          # Painel Administrativo
 curl -s -H 'Accept: text/plain' http://localhost:3000/prod-api/code    # captcha JSON
 ```
 
@@ -152,15 +152,34 @@ session created by the app's own login API.
   * *Menu names and permission names* are data (`sys_menu`): all 84 rows — navigation plus the
     permission tree — were translated to pt-BR in `sql/ry_20260417.sql` and in the running
     database. Changing one later is a plain `UPDATE sys_menu SET menu_name=...`.
-  * *Widget copy* (date pickers, month/week names, pagination, tables, dialogs, uploads) comes
-    from Element Plus, whose locale the UI hardcodes to `zh-cn` in `src/main.js`.
-    `docker/base44/ui-ptbr.sh` rewrites that one line to `element-plus/es/locale/lang/pt-br`;
-    `ruoyi-ui` mounts it and runs it after the clone, so it survives a fresh checkout. Re-run it
-    by hand with
-    `docker compose -f docker-compose.base44.yml exec -T ruoyi-ui sh /usr/local/bin/ui-ptbr.sh`.
-  * *Page copy* — table headers, form labels, buttons, the home page — is hardcoded Chinese inside
-    the separate UI project. Nothing in this repository can translate it, and `ruoyi-ui/` is
-    git-ignored, so edits there are local only. **Not translated yet.**
+  * *UI copy and branding* — the UI project's own copy is hardcoded Chinese and its chrome
+    carries the upstream project's links, copyright and promotional home page.
+    `docker/base44/ui-ptbr.mjs` runs on the mounted UI source after the clone, at every UI
+    start, and is idempotent: it points the Element Plus locale at pt-br (`src/main.js` hardcodes
+    `zh-cn`), replaces every Chinese text unit in `src/**` and `index.html` with its Portuguese
+    translation from `docker/base44/ui-ptbr.copy.mjs`, drops the navbar's links to the vendor's
+    repository and docs site (and those two components), empties the copyright footer,
+    neutralises the package metadata, removes the vendor's donation image, and swaps
+    `src/views/index.vue` — the vendor's promotional/credits page — for the neutral welcome
+    screen in `docker/base44/dashboard.vue`. Re-run it by hand with
+    `docker compose -f docker-compose.base44.yml exec -T ruoyi-ui node /usr/local/bin/ui-ptbr.mjs /app`.
+    Fix or add a string by editing `ui-ptbr.copy.mjs`: the map is keyed on the Chinese run as it
+    appears in the source, and is applied longest-key-first. Note the UI project's files use CRLF
+    line endings — match on substrings or whole lines, not on `$`-anchored regexes.
+  * The console wordmark (sidebar logo + browser tab) is `VITE_APP_TITLE` in compose: Vite gives
+    a real environment variable precedence over the UI's own `.env` files, so the title needs no
+    source edit. It is deliberately generic ("Painel Administrativo") — it sits at the top of
+    every screen, so it must not carry a vendor credit.
+  * *Seeded data* — menu names, department/user/role/post names, dictionary labels, config names,
+    demo jobs, notices and menu remarks are the upstream project's Chinese demo data in
+    `sql/ry_20260417.sql`. `sql/zz_base44_ptbr.sql` (same `sql/` mount, name sorts after the
+    seed) rewrites them to neutral pt-BR and deletes menu 4 — "Site do RuoYi", the vendor's
+    website link — together with its grants. Every statement is keyed on the row's primary key,
+    so re-running is harmless; on an already-seeded volume apply it with
+    `docker compose -f docker-compose.base44.yml exec -T mysql mysql --default-character-set=utf8mb4 -uroot -ppassword ry-cloud < sql/zz_base44_ptbr.sql`.
+  * Backend Java comments/javadoc, the `LICENSE` and the upstream copyright headers in the Java
+    source are still Chinese or carry the upstream copyright. They are invisible in the product,
+    and both the MIT licence and the upstream headers must be kept — do not strip them.
 * **Sentinel in the gateway — must not point at `127.0.0.1`:** `ruoyi-gateway`'s
   `bootstrap.yml` hardcodes `spring.cloud.sentinel.datasource.ds1.nacos.server-addr:
   127.0.0.1:8848` (and `sentinel.transport.dashboard: 127.0.0.1:8718`). Inside a container
