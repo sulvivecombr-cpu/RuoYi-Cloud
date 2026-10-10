@@ -109,6 +109,36 @@ services:
       - maven-repo:/root/.m2
     restart: "no"
 
+  # One-shot: the seeded console menus "Nacos控制台" (112), "Admin控制台" (113) and
+  # "系统接口" (116) link to http://localhost:<port>, which in a browser resolves to the
+  # *viewer's* own machine, so those pages never open. Rewrite them onto this sandbox's
+  # public host ports — derived at startup from the platform variable, never hardcoded, so
+  # they stay correct when the sandbox host changes. Runs on every `up -d` and is idempotent.
+  # Menu 111 ("Sentinel控制台") is hidden: no Sentinel dashboard runs in this stack.
+  menu-urls:
+    image: mysql:8.0
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # The platform supplies this; unset outside the sandbox, which skips the rewrite.
+      BASE44_PUBLIC_HOST_SUFFIX: ${BASE44_PUBLIC_HOST_SUFFIX:-}
+    entrypoint: ["sh", "-ec"]
+    command:
+      - |
+        if [ -z "$BASE44_PUBLIC_HOST_SUFFIX" ]; then
+          echo "BASE44_PUBLIC_HOST_SUFFIX unset - leaving the seeded dashboard menu URLs alone"
+          exit 0
+        fi
+        mysql -h mysql -uroot -ppassword ry-cloud <<SQL
+        UPDATE sys_menu SET path = 'https://8088-$BASE44_PUBLIC_HOST_SUFFIX/'                        WHERE menu_id = 112;
+        UPDATE sys_menu SET path = 'https://9100-$BASE44_PUBLIC_HOST_SUFFIX/login'                   WHERE menu_id = 113;
+        UPDATE sys_menu SET path = 'https://8080-$BASE44_PUBLIC_HOST_SUFFIX/swagger-ui/index.html'   WHERE menu_id = 116;
+        UPDATE sys_menu SET visible = '1'                                                            WHERE menu_id = 111;
+        SQL
+        echo "dashboard menus now point at the public host ports of this sandbox"
+    restart: "no"
+
   ruoyi-gateway:
     image: *app-image
     working_dir: /workspace

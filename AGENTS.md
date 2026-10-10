@@ -118,8 +118,18 @@ session created by the app's own login API.
 * Dashboard ports (each also publicly reachable on its own host port):
   Nacos console `8088` (nacos / nacos), Spring Boot Admin monitor `9100` — use
   `9100/login` (ruoyi / 123456), the root answers `401` — and gateway API `8080`.
-  The seeded menu 113 ("Admin控制台") points at `http://localhost:9100/login`, which resolves
-  to the viewer's own machine, so that one menu entry will not open the monitor in the sandbox.
+* **Console dashboard menu links — rewritten at startup.** The seeded menus point at
+  `http://localhost:<port>` (112 Nacos控制台 `:8848/nacos`, 113 Admin控制台 `:9100/login`,
+  116 系统接口 `:8080/swagger-ui/index.html`), and localhost in a browser is the *viewer's*
+  own machine, so none of them opened. The one-shot `menu-urls` service (plain `mysql:8.0`,
+  `depends_on: mysql healthy`, no `restart`) rewrites those three rows onto
+  `https://<port>-${BASE44_PUBLIC_HOST_SUFFIX}` on every `up -d`, and hides menu 111
+  (Sentinel控制台 `:8718`) because no Sentinel dashboard runs here. It is idempotent, and
+  skips the rewrite when `BASE44_PUBLIC_HOST_SUFFIX` is unset. Check it with
+  `docker compose -f docker-compose.base44.yml ps menu-urls` (exited 0) or
+  `select menu_id, path, visible from sys_menu where path like 'http%'`. The menu tree the
+  UI shows comes from `GET /system/menu/getRouters`, so the new URLs appear after a page
+  reload (routes are fetched on load).
 * **Sentinel in the gateway — must not point at `127.0.0.1`:** `ruoyi-gateway`'s
   `bootstrap.yml` hardcodes `spring.cloud.sentinel.datasource.ds1.nacos.server-addr:
   127.0.0.1:8848` (and `sentinel.transport.dashboard: 127.0.0.1:8718`). Inside a container
