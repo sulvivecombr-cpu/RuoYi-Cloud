@@ -117,6 +117,14 @@ services:
       - ./:/workspace
     environment:
       <<: [*nacos-registry, *redis-host]
+      # bootstrap.yml hardcodes this Nacos address for Sentinel's rule data source as
+      # 127.0.0.1:8848, which is unreachable from inside a container: that second Nacos
+      # client never connected, spammed "Client not connected ... STARTING" and the gateway
+      # flow rules were never loaded. Point it at the real Nacos service.
+      SPRING_CLOUD_SENTINEL_DATASOURCE_DS1_NACOS_SERVER_ADDR: nacos:8848
+      # No Sentinel dashboard runs in this stack (the repo's own compose omits it as well),
+      # so the default 127.0.0.1:8718 heartbeat target is silenced rather than dead.
+      SPRING_CLOUD_SENTINEL_TRANSPORT_DASHBOARD: ""
     ports:
       - "8080:8080"
     depends_on:

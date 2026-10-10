@@ -108,8 +108,20 @@ curl -s -X DELETE "$BASE/auth/logout" -H "Authorization: Bearer $TOKEN"
   (`/nacos/v1/cs/configs?...`), which also proves the MySQL config store is reachable.
 * Dashboard ports: Nacos console `8088` (nacos / nacos), Spring Boot Admin monitor `9100`
   (ruoyi / 123456), gateway API `8080`.
+* **Sentinel in the gateway — must not point at `127.0.0.1`:** `ruoyi-gateway`'s
+  `bootstrap.yml` hardcodes `spring.cloud.sentinel.datasource.ds1.nacos.server-addr:
+  127.0.0.1:8848` (and `sentinel.transport.dashboard: 127.0.0.1:8718`). Inside a container
+  neither address exists, so that second Nacos client never connected, logged
+  `Client not connected, current status:STARTING` in a tight loop, and **the gateway flow
+  rules were silently never loaded**. Compose fixes it with
+  `SPRING_CLOUD_SENTINEL_DATASOURCE_DS1_NACOS_SERVER_ADDR=nacos:8848`. Confirm the rules
+  really arrive with:
+  `docker compose -f docker-compose.base44.yml logs ruoyi-gateway | grep notify-ok`
+  (expect `sentinel-ruoyi-gateway ... [notify-ok]` with an md5).
+* No Sentinel dashboard or Seata server runs in this stack (the repo's own compose omits both),
+  so `SPRING_CLOUD_SENTINEL_TRANSPORT_DASHBOARD` is set empty rather than heartbeating a dead
+  `127.0.0.1:8718`. Seata is genuinely unused: `ruoyi-common-seata` appears only in the root
+  `dependencyManagement`, no module depends on it.
 * No host- or origin-allowlist changes were needed (nothing in this stack checks `Host` or
-  `Origin`), and no third-party credentials are required: file storage is local
-  (`file.path`), and Sentinel's dashboard / Seata are not part of this compose stack
-  (Sentinel logs connection warnings and continues without them). Because no code or shared
-  config is gated, `BASE44_PREVIEW_MODE` is not used here.
+  `Origin`), and no third-party credentials are required: file storage is local (`file.path`).
+  Because no code or shared config is gated, `BASE44_PREVIEW_MODE` is not used here.
